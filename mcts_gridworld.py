@@ -33,7 +33,7 @@ import math
 verbose = 4
 
 class Environment(): 
-    def __init__(self, seed=0, size=5, total_moves = 10, factor=1, random=False):
+    def __init__(self, seed=0, size=5, total_moves = 10, factor=1, superpower_env=False):
         # np.random.seed(seed)
         self.generate_size = size
         if factor > 1: 
@@ -44,21 +44,57 @@ class Environment():
         # self.history = [self.observation()]   
 
         self.total_moves = total_moves #number of moves in a game
-        
-        self.actions = [(0, 1), (0, -1), (1, 0), (-1, 0), (0, 0)]
-        self.action_size = len(self.actions) #at each timestep, what is the possible action size? (here, 5: up down left right null)
+        self.superpower_env = superpower_env
 
-        self.random = random 
+        # self.actions = [(0, 1), (0, -1), (1, 0), (-1, 0), (0, 0)]
+        self.actions = []
+        self.n_reg_actions = len(self.actions)
 
-    def init_state(self): 
+        if superpower_env:
+            self.actions += [(i, j) for i in range(self.size) for j in range(self.size)] #allow teleportation 
+
+            # self.action_size += len(self.superpowers) #at each timestep, what is the possible action size? (here, 5: up down left right null)
+    
+        self.action_size = len(self.actions)
+
+
+    def init_state(self, method='opposite'): 
         state = {
             'timestep' : 0 
             # 'visited' : np.zeros((size, size), dtype=int)
         }
-        self.generate_walls(state)
+        sz = self.generate_size
+
+        maze = generate_maze(sz)
+        if method == 'opposite': 
+            for i in range(0, sz):
+              if (maze[1][i] == 0):
+                maze[0][i] = 0
+                state['agent_xy'] = (0, i)
+                # print(f'agent_xy: {(0, i)}')
+                break
+
+            for i in range(sz-1, 0, -1):
+              if (maze[sz-2][i] == 0):
+                maze[sz-1][i] = 0
+                state['coin_xy'] = (sz-1, i)
+                break
+        elif method == 'uniform':
+            for thing in ['coin_xy', 'agent_xy']:
+                while True: 
+                    Placement = tuple(np.random.choice(list(range(self.size)),(2,)))
+                    if self.is_valid_placement(Placement, maze):
+                        state[thing]=tuple(int(x) for x in Placement)
+                        maze[Placement[0]][Placement[1]] = 0
+                        break
+        else: 
+            print(f'error, method {method} not supported')
+
+        state['walls'] = maze
 
         if self.factor > 1: 
             self.expand(state)
+
         return state 
 
     def expand(self, state): 
@@ -87,55 +123,35 @@ class Environment():
                 return True 
         return False
 
-    def generate_walls(self, state):
-
-        sz = self.generate_size
-
-        maze = generate_maze(sz)
-        if not self.random: 
-            for i in range(0, sz):
-              if (maze[1][i] == 0):
-                maze[0][i] = 0
-                state['agent_xy'] = (0, i)
-                # print(f'agent_xy: {(0, i)}')
-                break
-
-            for i in range(sz-1, 0, -1):
-              if (maze[sz-2][i] == 0):
-                maze[sz-1][i] = 0
-                state['coin_xy'] = (sz-1, i)
-                break
-        else:
-            for thing in ['coin_xy', 'agent_xy']:
-                while True: 
-                    Placement = tuple(np.random.choice(list(range(self.size)),(2,)))
-                    if self.is_valid_placement(Placement, maze):
-                        state[thing]=tuple(int(x) for x in Placement)
-                        break
-
-        state['walls'] = maze
 
     def make_move(self, s, a):
         new_s = copy.deepcopy(s)
-        dx, dy = a 
-        x, y = new_s['agent_xy']
-        valid_moves = self.get_valid_moves(s) 
+        if a in self.actions[:self.n_reg_actions]:
+            dx, dy = a 
+            x, y = new_s['agent_xy']
 
-        if a in valid_moves:
-            new_s['agent_xy'] = (x + dx, y + dy)
-            new_s['timestep'] += 1
-        else: 
-            print('oops, invalid move suggested')
-            exit()
-        
+            if a in self.get_valid_moves(s):
+                new_s['agent_xy'] = (x + dx, y + dy)
+            else: 
+                print('oops, invalid move suggested')
+                exit()
+        else: #teleport agent
+            new_s['agent_xy'] = a 
+
+        new_s['timestep'] += 1
+
         return new_s 
-  
-    def get_valid_moves(self, s=None): 
+
+    def get_valid_moves(self, s=None, superpowers=False): 
         if s == None: #returns all of the valid moves if not given a specific state. 
+            # if superpowers: 
             return self.actions
+            # else: 
+            #     return self.actions
     
         valid_moves = []
-        for action in self.actions:
+
+        for action in self.actions[:self.n_reg_actions]:
           dx, dy = action 
           x, y = s['agent_xy']
               
@@ -148,12 +164,15 @@ class Environment():
               valid = False
           if valid:
               valid_moves.append(action)
+        if superpowers: 
+            valid_moves += self.actions[self.n_reg_actions:]
         return valid_moves
 
     def observation(self, s):
         obs = np.zeros((self.size,self.size, 4))
 
         obs[tuple(s['coin_xy']), 0] = 1 
+
         obs[tuple(s['agent_xy']), 1] = 1
         obs[:, 2] = s['timestep']
         obs[:, :, 3] = np.array(s['walls'])
@@ -228,9 +247,7 @@ class NNet():
 
     def predict(self, board):
 
-        # print(board.shape)
         board = board[np.newaxis, :, :]
-        # print(board.shape)
         pi, v = self.model.predict(board, verbose=False)
 
         return pi[0], v[0]
@@ -259,9 +276,10 @@ class NNet():
 
 
 def get_hash(s): 
-    copy_s = copy.deepcopy(s)
-    copy_s['walls'] = copy_s['walls'].tolist()
-    return json.dumps(copy_s)
+    # copy_s = copy.deepcopy(s)
+    # copy_s['walls'] = copy_s['walls'].tolist()
+    # return json.dumps(copy_s)
+    return s['agent_xy']
 
 # def eval_reward(nnet, examples ): #does pit allow nns to use MCTS as well ? presumably yes. 
 
@@ -281,7 +299,7 @@ class MCTS():
         self.N = {} 
         self.Q = {} 
 
-    def search(self, s, nnet, cur_depth=0, depth_limit = None):
+    def search(self, s, nnet, superpowers, cur_depth=0, depth_limit = None):
         if depth_limit != None and cur_depth >= depth_limit: 
             p, v = nnet.predict(self.env.observation(s))
             return v
@@ -298,22 +316,30 @@ class MCTS():
             # print(v)
             self.P[sh] = {self.env.actions[i] : p[i] for i in range(self.env.action_size)} #note that this can assign probability to invalid moves
             return v
+        if verbose > 7: 
+            print(self.P[sh])
+
         
         if sh not in self.N.keys():
             self.N[sh] = {a : 0 for a in self.env.get_valid_moves()}  
             self.Q[sh] = {a : 0 for a in self.env.get_valid_moves()} 
         #if we are visited, explore at this point, decide what the best action is to take according to upper confidence bound.  
         max_u, best_a = -float("inf"), -1
-        for a in self.env.get_valid_moves(s):
-            numerator = np.sum([self.N[sh][b] for b in self.env.get_valid_moves(s)])
+        # print('mcts finding best move...')
+        for a in self.env.get_valid_moves(s, superpowers):
+            numerator = np.sum([self.N[sh][b] for b in self.env.get_valid_moves(s, superpowers)])
             u = self.Q[sh][a] + self.c_puct*self.P[sh][a]*np.sqrt(numerator)/(1+self.N[sh][a] )
+            # print(f'numerator = {numerator}')
+            if verbose > 5: print(f'a={a}, u={u}= {self.Q[sh][a]}+{self.c_puct*self.P[sh][a]*np.sqrt(numerator)/(1+self.N[sh][a])}')
+
             if u>max_u:
                 max_u = u
                 best_a = a
         a = best_a #we've found the best action according to UCB
-        
+        if verbose > 4: print(f'chose: {a}')
+
         sp = self.env.make_move(s, a)
-        v = self.search(sp, nnet, cur_depth+1, depth_limit) + self.env.reward(sp) #we make the move and recurse, find the future value which is the current value + the value in all future timesteps
+        v = self.search(sp, nnet, superpowers, cur_depth+1, depth_limit) + self.env.reward(sp) #we make the move and recurse, find the future value which is the current value + the value in all future timesteps
 
 
         self.Q[sh][a] = (self.N[sh][a] *self.Q[sh][a]  + v)/(self.N[sh][a]+1)
@@ -321,39 +347,43 @@ class MCTS():
 
         return v
     
-    def pi(self, s): 
+    def pi(self, s, superpowers): 
         sh = get_hash(s)
         if sh not in self.N: 
             print(f'key error: {sh}, using uniform')
             unif = []
             for a in self.env.get_valid_moves(): 
-                if a in self.env.get_valid_moves(s): 
+                if a in self.env.get_valid_moves(s, superpowers): 
                     unif.append(1 / len(self.env.get_valid_moves(s)) ) 
                 else: 
                     unif.append(0)
             return unif
         else: 
             # print(f'not a key error yay')
-            denominator = np.sum([self.N[sh][a]  for a in self.env.get_valid_moves(s)])
+            # denominator = np.sum([self.N[sh][a] for a in self.env.get_valid_moves(s, superpowers)])
             probs = []
             for a in self.env.get_valid_moves(): 
-                if a in self.env.get_valid_moves(s): 
-                    probs.append(self.N[sh][a] / denominator) 
+                if a in self.env.get_valid_moves(s, superpowers): 
+                    probs.append(self.N[sh][a]) 
                 else: 
                     probs.append(0)
+            probs = probs / np.sum(probs)
+            print(f'probs: {probs}')
             return probs
 
-def executeEpisode(env, nnet, numMCTSSims=10, depth_limit=3): #have the network try to play an environment to get some training data. 
+def executeEpisode(env, nnet, numMCTSSims=10, depth_limit=3,superpowers=False): #have the network try to play an environment to get some training data. 
     examples_episode = []
     s = env.init_state()
     mcts = MCTS(env)                                           # initialise search tree
         
     while True: #each run of this loop corresponds to one move in the game. 
         for _ in range(numMCTSSims):
-            mcts.search(s, nnet, depth_limit=depth_limit)
+            mcts.search(s, nnet, superpowers,depth_limit=depth_limit)
         
-        examples_episode.append([env.observation(s), mcts.pi(s), None])   # rewards can not be determined yet.  
-        a = np.random.choice(range(env.action_size), p=mcts.pi(s))    # sample action from improved policy
+        examples_episode.append([env.observation(s), mcts.pi(s, superpowers), None])   # rewards can not be determined yet.  
+        
+        a = np.random.choice(range(env.action_size), p=mcts.pi(s, superpowers=superpowers))    # sample action from improved policy
+
         a = env.actions[a]
         s = env.make_move(s,a)
         examples_episode[-1][2] = env.reward(s) #assign the reward of the next state
@@ -362,18 +392,20 @@ def executeEpisode(env, nnet, numMCTSSims=10, depth_limit=3): #have the network 
             return assignRewards(examples_episode) 
 
 #Main Training Loop 
-def policyIterSP(env, nnet, examples = [], numIters=10, numEps=50, numTest=10, training_run_name=''):
+def policyIterSP(env, nnet, examples = [], numIters=10, numEps=20, numTest=5, training_run_name=''):
     curr_r = 0
     print(f'evaluating initial nnet...')
     S = [ env.init_state() for _ in tqdm(range(numTest))] #test state to evaluate each 
-    r, r_s = evaluate_nnet(env, nnet, S) 
+    r, r_s = evaluate_nnet(env, nnet, S,superpowers=True) 
 
     for i in range(numIters):
         print(f'--- Iteration: {i} ---')
+        # superpowers = (i % 4 == 0)
+        superpowers = True
         print('gathering data by self play...')
         new_examples = copy.deepcopy(examples)
         for e in tqdm(range(numEps)):
-            new_examples += executeEpisode(env, nnet, numMCTSSims=5, depth_limit=2)          # collect examples from this environment for which it played. 
+            new_examples += executeEpisode(env, nnet, numMCTSSims=1600, depth_limit=2, superpowers=superpowers)          # collect examples from this environment for which it played. 
         print(f'\ntraining on {len(new_examples)} examples...')
         new_nnet = copy.deepcopy(nnet)
         new_nnet.train(new_examples)
@@ -381,7 +413,7 @@ def policyIterSP(env, nnet, examples = [], numIters=10, numEps=50, numTest=10, t
 
         print(f'evaluating new vs old nnet...')
 
-        r_new, r_new_s = evaluate_nnet(env, new_nnet, S)
+        r_new, r_new_s = evaluate_nnet(env, new_nnet, S, superpowers=superpowers)
         if r_new > r: 
             if verbose > 0: print(f'Victory! r: {r:.4f}+-{r_s:.4f}, r_new: {r_new:.4f}+-{r_new_s:.4f}')
             r = r_new
@@ -394,14 +426,14 @@ def policyIterSP(env, nnet, examples = [], numIters=10, numEps=50, numTest=10, t
 
 ### Evaluation code 
 
-def evaluate_nnet_episode(env, nnet,s, numMCTSSims, depth_limit=None):
+def evaluate_nnet_episode(env, nnet,s, numMCTSSims, depth_limit=5, superpowers=False):
     if verbose > 2: print('episode start')
     mcts = MCTS(env)      
     r_sum = env.reward(s)                                     # initialise search tree
     while True: #each run of this loop corresponds to one move in the game. 
         for _ in range(numMCTSSims):
-            mcts.search(s, nnet, depth_limit=depth_limit)
-        a = np.random.choice(range(env.action_size), p=mcts.pi(s))    # sample action from improved policy
+            mcts.search(s, nnet, superpowers, depth_limit=depth_limit)
+        a = np.random.choice(range(env.action_size), p=mcts.pi(s, superpowers))    # sample action from improved policy
         a = env.actions[a]
         s = env.make_move(s,a)
         if verbose > 3: env.print_state(s)
@@ -410,25 +442,25 @@ def evaluate_nnet_episode(env, nnet,s, numMCTSSims, depth_limit=None):
         if env.done(s):
             return r_sum
 
-def evaluate_nnet(env, nnet, S, numMCTSSims=10, parallel=False): #have the network try to play an environment to get some training data. 
+def evaluate_nnet(env, nnet, S, numMCTSSims=1600, parallel=False,superpowers=False): #have the network try to play an environment to get some training data. 
     if parallel: 
         process = lambda s : evaluate_nnet_episode(env, nnet,s, numMCTSSims)
         results = Parallel(n_jobs=20)(delayed(process)(s) for s in S)
     else: 
-        results = [evaluate_nnet_episode(env, nnet,s, numMCTSSims) for s in S]
+        results = [evaluate_nnet_episode(env, nnet,s, numMCTSSims, superpowers=superpowers) for s in S]
 
 
     return np.mean(results), np.std(results)
 
 def main(): 
-    env = Environment(size=10, total_moves=100, factor=1, random=True)
+    env = Environment(size=5, total_moves=20, factor=1, superpower_env=True)
     nnet = NNet(env)                                       # initialise random neural network
     examples = []
 
     for e in tqdm(range(0)):
         examples += executeEpisode(env, nnet, numMCTSSims=10, depth_limit=None)
 
-    policyIterSP(env, nnet, examples = examples, numIters=100,training_run_name='sep5evening')
+    policyIterSP(env, nnet, examples = examples, numIters=100,training_run_name='sep7superpowers')
 
 if __name__ == '__main__': 
     main() 
