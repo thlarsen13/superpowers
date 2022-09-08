@@ -28,6 +28,7 @@ import json
 from maze_generator import generate_maze
 from joblib import Parallel, delayed
 import math 
+import matplotlib.pyplot as plt
 
 
 verbose = 3
@@ -118,8 +119,8 @@ class Environment():
     
     def is_valid_placement(self, idx, maze): 
         x, y = idx 
-        for mv in self.actions[:-1]: 
-            dx, dy = mv 
+        for mv in self.actions[:self.n_reg_actions]: 
+            dx, dy, _ = mv 
             if self.is_valid_idx(x+dx, y+dy) and maze[x+dx][y+dy] == 0: 
                 return True 
         return False
@@ -388,7 +389,7 @@ class MCTS():
 
 def executeEpisode(env, nnet, numMCTSSims=10, depth_limit=3,superpowers=False): #have the network try to play an environment to get some training data. 
     examples_episode = []
-    s = env.init_state()
+    s = env.init_state(method='opposite')
     mcts = MCTS(env)                                           # initialise search tree
         
     while True: #each run of this loop corresponds to one move in the game. 
@@ -407,20 +408,21 @@ def executeEpisode(env, nnet, numMCTSSims=10, depth_limit=3,superpowers=False): 
             return assignRewards(examples_episode) 
 
 #Main Training Loop 
-def policyIterSP(env, nnet, examples = [], numIters=10, numEps=2, numTest=5, training_run_name=''):
+def policyIterSP(env, nnet, examples = [], superpower_frac = 0, numIters=20, numEps=5, numTest=4, training_run_name=''):
     curr_r = 0
     print(f'evaluating initial nnet...')
-    S = [ env.init_state() for _ in tqdm(range(numTest))] #test state to evaluate each 
+    S = [ env.init_state(method='opposite') for _ in tqdm(range(numTest))] #test state to evaluate each 
     r, r_s = evaluate_nnet(env, nnet, S,superpowers=True) 
 
     for i in range(numIters):
-        print(f'--- Iteration: {i} ---')
-        superpowers = (i % 4 == 0)
+        superpowers = np.random.binomial(1, superpower_frac, 1)[0] > 0
+
+        print(f'--- Iteration: {i} (superpowers = {superpowers}) ---')
         # superpowers = True
         print('gathering data by self play...')
         new_examples = copy.deepcopy(examples)
         for e in tqdm(range(numEps)):
-            new_examples += executeEpisode(env, nnet, numMCTSSims=10, depth_limit=2, superpowers=superpowers)          # collect examples from this environment for which it played. 
+            new_examples += executeEpisode(env, nnet, numMCTSSims=2, depth_limit=2, superpowers=superpowers)          # collect examples from this environment for which it played. 
         print(f'\ntraining on {len(new_examples)} examples...')
         new_nnet = copy.deepcopy(nnet)
         new_nnet.train(new_examples)
@@ -428,8 +430,8 @@ def policyIterSP(env, nnet, examples = [], numIters=10, numEps=2, numTest=5, tra
 
         print(f'evaluating new vs old nnet...')
 
-        r_new, r_new_s = evaluate_nnet(env, new_nnet, S, superpowers=superpowers)
-        if r_new > r: 
+        r_new, r_new_s = evaluate_nnet(env, new_nnet, S, superpowers=False)
+        if r_new > r-r_s: 
             if verbose > 0: print(f'Victory! r: {r:.4f}+-{r_s:.4f}, r_new: {r_new:.4f}+-{r_new_s:.4f}')
             r = r_new
             r_s = r_new_s
@@ -442,7 +444,7 @@ def policyIterSP(env, nnet, examples = [], numIters=10, numEps=2, numTest=5, tra
 ### Evaluation code 
 
 def evaluate_nnet_episode(env, nnet,s, numMCTSSims, depth_limit=5, superpowers=False):
-    if verbose > 2: print('episode start')
+    if verbose > 3: print('episode start')
     mcts = MCTS(env)      
     r_sum = env.reward(s)                                     # initialise search tree
     while True: #each run of this loop corresponds to one move in the game. 
@@ -457,28 +459,57 @@ def evaluate_nnet_episode(env, nnet,s, numMCTSSims, depth_limit=5, superpowers=F
         if env.done(s):
             return r_sum
 
-def evaluate_nnet(env, nnet, S, numMCTSSims=10, parallel=False,superpowers=False): #have the network try to play an environment to get some training data. 
+def evaluate_nnet(env, nnet, S, numMCTSSims=10, parallel=False,superpowers=False, plot=False, training_run_name=None): #have the network try to play an environment to get some training data. 
     if parallel: 
         process = lambda s : evaluate_nnet_episode(env, nnet,s, numMCTSSims)
         results = Parallel(n_jobs=20)(delayed(process)(s) for s in S)
     else: 
         results = [evaluate_nnet_episode(env, nnet,s, numMCTSSims, superpowers=superpowers) for s in S]
 
+    if plot: 
+        # plt.plot(bins=10, results, '--', color ='black')
+        plt.figure()
+        plt.hist(results)
+        plt.xlabel('Reward')
+        plt.ylabel('Frequency')
+          
+        # plt.title('matplotlib.pyplot.hist() function Example\n\n',
+        #           fontweight ="bold")
+          
+        plt.savefig(f'plots/{training_run_name}.png')
 
     return np.mean(results), np.std(results)
 
+"""
+
+Experiments: 
+
+1. Train with coin always initialized bottom right. Test coin randomly initialized, check performance of 
+
+- trained with superpowers NN
+- normally trained NN 
+- random NN  
+
+
+
+"""
 def main(): 
-    env = Environment(size=5, total_moves=20, factor=1, superpower_env=True)
-    nnet = NNet(env)                                       # initialise random neural network
-    examples = []
+    training_run_name = 's8.2'
+    env = Environment(size=7, total_moves=10, factor=1, superpower_env=True)
+    nnet1 = NNet(env)     
+    numTest = 100
+    S = [ env.init_state(method='uniform') for _ in tqdm(range(numTest))] #test state to evaluate each 
+    
+    r, r_s = evaluate_nnet(env, nnet1, S,superpowers=False ,plot=True, training_run_name=training_run_name+'.ran') 
+                                  # initialise random neural network
+    nnet1 = policyIterSP(env, nnet1, examples = [],training_run_name=training_run_name+'.reg')
+    r, r_s = evaluate_nnet(env, nnet1, S,superpowers=False ,plot=True, training_run_name=training_run_name+'.reg') 
 
-    for e in tqdm(range(0)):
-        examples += executeEpisode(env, nnet, numMCTSSims=10, depth_limit=None)
 
-    nnet = policyIterSP(env, nnet, examples = examples, numIters=100,training_run_name='sep7superpowers_alternating')
+    nnet2 = NNet(env)                                       # initialise random neural network
+    nnet2 = policyIterSP(env, nnet2, examples = [], superpower_frac = .5 ,training_run_name=training_run_name+'.sup')
 
-    S = [ env.init_state() for _ in tqdm(range(numTest))] #test state to evaluate each 
-    r, r_s = evaluate_nnet(env, nnet, S,superpowers=True) 
+    r, r_s = evaluate_nnet(env, nnet2, S,superpowers=False, plot=True, training_run_name=training_run_name+'.sup') 
 
 if __name__ == '__main__': 
     main() 
