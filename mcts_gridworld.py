@@ -30,7 +30,7 @@ from joblib import Parallel, delayed
 import math 
 
 
-verbose = 4
+verbose = 3
 
 class Environment(): 
     def __init__(self, seed=0, size=5, total_moves = 10, factor=1, superpower_env=False):
@@ -46,12 +46,13 @@ class Environment():
         self.total_moves = total_moves #number of moves in a game
         self.superpower_env = superpower_env
 
-        # self.actions = [(0, 1), (0, -1), (1, 0), (-1, 0), (0, 0)]
-        self.actions = []
+        self.actions = [(0, 1), (0, -1), (1, 0), (-1, 0), (0, 0)]
+        self.actions = [(x[0], x[1], 'move') for x in self.actions]
+        # self.actions = []
         self.n_reg_actions = len(self.actions)
 
         if superpower_env:
-            self.actions += [(i, j) for i in range(self.size) for j in range(self.size)] #allow teleportation 
+            self.actions += [(i, j, 'teleport') for i in range(self.size) for j in range(self.size)] #allow teleportation 
 
             # self.action_size += len(self.superpowers) #at each timestep, what is the possible action size? (here, 5: up down left right null)
     
@@ -126,25 +127,29 @@ class Environment():
 
     def make_move(self, s, a):
         new_s = copy.deepcopy(s)
-        if a in self.actions[:self.n_reg_actions]:
-            dx, dy = a 
+        if a[2] == 'move':
+            dx, dy, _ = a 
             x, y = new_s['agent_xy']
 
             if a in self.get_valid_moves(s):
                 new_s['agent_xy'] = (x + dx, y + dy)
             else: 
-                print('oops, invalid move suggested')
+                print(f'oops, invalid move: {a} suggested')
+                print('current state:')
+                self.print_state(s)
                 exit()
         else: #teleport agent
-            new_s['agent_xy'] = a 
+            dx, dy, _ = a 
+            new_s['agent_xy'] = (dx, dy) 
 
         new_s['timestep'] += 1
 
         return new_s 
 
-    def get_valid_moves(self, s=None, superpowers=False): 
+    def get_valid_moves(self, s=None, superpowers=False, debug=False): 
         if s == None: #returns all of the valid moves if not given a specific state. 
             # if superpowers: 
+            if debug: print('s = None!!!! oops!!!')
             return self.actions
             # else: 
             #     return self.actions
@@ -152,7 +157,8 @@ class Environment():
         valid_moves = []
 
         for action in self.actions[:self.n_reg_actions]:
-          dx, dy = action 
+          if debug: print(f'checking action: {action}')
+          dx, dy, _ = action 
           x, y = s['agent_xy']
               
           valid = True 
@@ -164,7 +170,10 @@ class Environment():
               valid = False
           if valid:
               valid_moves.append(action)
+        if debug: print(f'superpowers={superpowers}')
         if superpowers: 
+            if debug: print(f'adding superpowers: {self.actions[self.n_reg_actions:]}')
+
             valid_moves += self.actions[self.n_reg_actions:]
         return valid_moves
 
@@ -172,7 +181,7 @@ class Environment():
         obs = np.zeros((self.size,self.size, 4))
 
         obs[tuple(s['coin_xy']), 0] = 1 
-
+        # print('@@@', s['agent_xy'])
         obs[tuple(s['agent_xy']), 1] = 1
         obs[:, 2] = s['timestep']
         obs[:, :, 3] = np.array(s['walls'])
@@ -212,7 +221,7 @@ class NNet():
         self.action_size = env.action_size
         self.num_channels = 512 
         self.batch_size = 16 
-        self.epochs = 25
+        self.epochs = 5
         self.lr = 10**-3
         self.dropout = .5
 
@@ -293,7 +302,7 @@ class MCTS():
 
         self.env = env
 
-        self.c_puct = 100#variable controlling degree of exploration. 
+        self.c_puct = 1#variable controlling degree of exploration. 
         # self.visited = []
         self.P = {} # mapping from state -> distribution over policy starting at that state 
         self.N = {} 
@@ -326,6 +335,7 @@ class MCTS():
         #if we are visited, explore at this point, decide what the best action is to take according to upper confidence bound.  
         max_u, best_a = -float("inf"), -1
         # print('mcts finding best move...')
+
         for a in self.env.get_valid_moves(s, superpowers):
             numerator = np.sum([self.N[sh][b] for b in self.env.get_valid_moves(s, superpowers)])
             u = self.Q[sh][a] + self.c_puct*self.P[sh][a]*np.sqrt(numerator)/(1+self.N[sh][a] )
@@ -336,6 +346,11 @@ class MCTS():
                 max_u = u
                 best_a = a
         a = best_a #we've found the best action according to UCB
+        if a == -1: 
+            print('debug valid moves: ')
+            print(self.env.get_valid_moves(s, superpowers, debug=True))
+            print('state:')
+            print(self.env.print_state(s))
         if verbose > 4: print(f'chose: {a}')
 
         sp = self.env.make_move(s, a)
@@ -368,7 +383,7 @@ class MCTS():
                 else: 
                     probs.append(0)
             probs = probs / np.sum(probs)
-            print(f'probs: {probs}')
+            if verbose > 5: print(f'probs: {probs}')
             return probs
 
 def executeEpisode(env, nnet, numMCTSSims=10, depth_limit=3,superpowers=False): #have the network try to play an environment to get some training data. 
@@ -392,7 +407,7 @@ def executeEpisode(env, nnet, numMCTSSims=10, depth_limit=3,superpowers=False): 
             return assignRewards(examples_episode) 
 
 #Main Training Loop 
-def policyIterSP(env, nnet, examples = [], numIters=10, numEps=20, numTest=5, training_run_name=''):
+def policyIterSP(env, nnet, examples = [], numIters=10, numEps=2, numTest=5, training_run_name=''):
     curr_r = 0
     print(f'evaluating initial nnet...')
     S = [ env.init_state() for _ in tqdm(range(numTest))] #test state to evaluate each 
@@ -400,12 +415,12 @@ def policyIterSP(env, nnet, examples = [], numIters=10, numEps=20, numTest=5, tr
 
     for i in range(numIters):
         print(f'--- Iteration: {i} ---')
-        # superpowers = (i % 4 == 0)
-        superpowers = True
+        superpowers = (i % 4 == 0)
+        # superpowers = True
         print('gathering data by self play...')
         new_examples = copy.deepcopy(examples)
         for e in tqdm(range(numEps)):
-            new_examples += executeEpisode(env, nnet, numMCTSSims=1600, depth_limit=2, superpowers=superpowers)          # collect examples from this environment for which it played. 
+            new_examples += executeEpisode(env, nnet, numMCTSSims=10, depth_limit=2, superpowers=superpowers)          # collect examples from this environment for which it played. 
         print(f'\ntraining on {len(new_examples)} examples...')
         new_nnet = copy.deepcopy(nnet)
         new_nnet.train(new_examples)
@@ -442,7 +457,7 @@ def evaluate_nnet_episode(env, nnet,s, numMCTSSims, depth_limit=5, superpowers=F
         if env.done(s):
             return r_sum
 
-def evaluate_nnet(env, nnet, S, numMCTSSims=1600, parallel=False,superpowers=False): #have the network try to play an environment to get some training data. 
+def evaluate_nnet(env, nnet, S, numMCTSSims=10, parallel=False,superpowers=False): #have the network try to play an environment to get some training data. 
     if parallel: 
         process = lambda s : evaluate_nnet_episode(env, nnet,s, numMCTSSims)
         results = Parallel(n_jobs=20)(delayed(process)(s) for s in S)
@@ -460,7 +475,10 @@ def main():
     for e in tqdm(range(0)):
         examples += executeEpisode(env, nnet, numMCTSSims=10, depth_limit=None)
 
-    policyIterSP(env, nnet, examples = examples, numIters=100,training_run_name='sep7superpowers')
+    nnet = policyIterSP(env, nnet, examples = examples, numIters=100,training_run_name='sep7superpowers_alternating')
+
+    S = [ env.init_state() for _ in tqdm(range(numTest))] #test state to evaluate each 
+    r, r_s = evaluate_nnet(env, nnet, S,superpowers=True) 
 
 if __name__ == '__main__': 
     main() 
