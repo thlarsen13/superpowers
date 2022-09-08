@@ -31,7 +31,7 @@ import math
 import matplotlib.pyplot as plt
 
 
-verbose = 3
+verbose = 4
 
 class Environment(): 
     def __init__(self, seed=0, size=5, total_moves = 10, factor=1, superpower_env=False):
@@ -128,6 +128,7 @@ class Environment():
 
     def make_move(self, s, a):
         new_s = copy.deepcopy(s)
+        new_s['prev_agent_xy'] = new_s['agent_xy']
         if a[2] == 'move':
             dx, dy, _ = a 
             x, y = new_s['agent_xy']
@@ -179,13 +180,16 @@ class Environment():
         return valid_moves
 
     def observation(self, s):
-        obs = np.zeros((self.size,self.size, 4))
+        obs = np.zeros((self.size,self.size, 5))
 
         obs[tuple(s['coin_xy']), 0] = 1 
         # print('@@@', s['agent_xy'])
         obs[tuple(s['agent_xy']), 1] = 1
-        obs[:, 2] = s['timestep']
-        obs[:, :, 3] = np.array(s['walls'])
+        if 'prev_agent_xy' in s: 
+            obs[tuple(s['prev_agent_xy']), 2] = 1
+
+        obs[:, 3] = s['timestep']
+        obs[:, :, 4] = np.array(s['walls'])
 
         return obs
 
@@ -222,11 +226,11 @@ class NNet():
         self.action_size = env.action_size
         self.num_channels = 512 
         self.batch_size = 16 
-        self.epochs = 5
+        self.epochs = 10
         self.lr = 10**-3
         self.dropout = .5
 
-        self.in_channels = 4
+        self.in_channels = 5
 
         # Neural Net
         self.input_boards = Input(shape=(env.size, env.size, self.in_channels))    # s: batch_size x board_y x board_z
@@ -341,7 +345,7 @@ class MCTS():
             numerator = np.sum([self.N[sh][b] for b in self.env.get_valid_moves(s, superpowers)])
             u = self.Q[sh][a] + self.c_puct*self.P[sh][a]*np.sqrt(numerator)/(1+self.N[sh][a] )
             # print(f'numerator = {numerator}')
-            if verbose > 5: print(f'a={a}, u={u}= {self.Q[sh][a]}+{self.c_puct*self.P[sh][a]*np.sqrt(numerator)/(1+self.N[sh][a])}')
+            if verbose > 6: print(f'a={a}, u={u}= {self.Q[sh][a]}+{self.c_puct*self.P[sh][a]*np.sqrt(numerator)/(1+self.N[sh][a])}')
 
             if u>max_u:
                 max_u = u
@@ -352,7 +356,7 @@ class MCTS():
             print(self.env.get_valid_moves(s, superpowers, debug=True))
             print('state:')
             print(self.env.print_state(s))
-        if verbose > 4: print(f'chose: {a}')
+        if verbose > 6: print(f'chose: {a}')
 
         sp = self.env.make_move(s, a)
         v = self.search(sp, nnet, superpowers, cur_depth+1, depth_limit) + self.env.reward(sp) #we make the move and recurse, find the future value which is the current value + the value in all future timesteps
@@ -422,7 +426,7 @@ def policyIterSP(env, nnet, examples = [], superpower_frac = 0, numIters=20, num
         print('gathering data by self play...')
         new_examples = copy.deepcopy(examples)
         for e in tqdm(range(numEps)):
-            new_examples += executeEpisode(env, nnet, numMCTSSims=2, depth_limit=2, superpowers=superpowers)          # collect examples from this environment for which it played. 
+            new_examples += executeEpisode(env, nnet, numMCTSSims=50, depth_limit=4, superpowers=superpowers)          # collect examples from this environment for which it played. 
         print(f'\ntraining on {len(new_examples)} examples...')
         new_nnet = copy.deepcopy(nnet)
         new_nnet.train(new_examples)
@@ -494,10 +498,10 @@ Experiments:
 
 """
 def main(): 
-    training_run_name = 's8.2'
-    env = Environment(size=7, total_moves=10, factor=1, superpower_env=True)
+    training_run_name = 's8.3'
+    env = Environment(size=6, total_moves=15, factor=1, superpower_env=True)
     nnet1 = NNet(env)     
-    numTest = 100
+    numTest = 10
     S = [ env.init_state(method='uniform') for _ in tqdm(range(numTest))] #test state to evaluate each 
     
     r, r_s = evaluate_nnet(env, nnet1, S,superpowers=False ,plot=True, training_run_name=training_run_name+'.ran') 
